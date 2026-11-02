@@ -11,7 +11,8 @@ if not cc.is_file() or not a.stock_cpp.is_file():p.error('Need the NDK compiler 
 a.output.mkdir(parents=True);commands=[]
 for src,name in [('controller_sdk_pose.cpp','controller-sdk-pose'),('controller_sdk_imu.c','controller-sdk-imu'),('controller_sdk_probe.c','controller-sdk-probe')]:
  compiler=cc if src.endswith('.cpp') else tools/'armv7a-linux-androideabi28-clang'
- args=[str(compiler),'-O2','-g','-Wall','-Wextra','-fPIE','-pie','-I'+str(r/'include'),'-I'+str(a.device/'include'),str(r/'src'/src)]
+ prefixes=[(Path.cwd(),'/build'),(r.parent,'/usr/src'),(a.ndk,'/opt/android-ndk'),(r,'/usr/src/qiyu-controller-tracking'),(a.device,'/usr/src/qiyu-device-service')]
+ args=[str(compiler),*[flag+str(src)+'='+dest for src,dest in prefixes for flag in ['-ffile-prefix-map=','-fdebug-prefix-map=']],'-O2','-g','-Wall','-Wextra','-fPIE','-pie','-I'+str(r/'include'),'-I'+str(a.device/'include'),str(r/'src'/src)]
  if src.endswith('.cpp'):args+=['-std=c++17','-nostdlib++',str(a.stock_cpp)]
  args+=['-ldl','-o',str(a.output/name)];subprocess.run(args,check=True);commands.append(args)
 files={q.name:hashlib.sha256(q.read_bytes()).hexdigest() for q in a.output.iterdir() if q.is_file()}
