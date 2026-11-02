@@ -1,0 +1,275 @@
+{
+  "contract": "a081.stock-controller.radio-clock",
+  "scope": {
+    "analysis": "Offline static REA/Ghidra plus Thumb disassembly of the pinned A081 native libraries.",
+    "device_access": false,
+    "transmit_performed": false,
+    "frozen_helper_modified": false,
+    "radio_firmware_clock_discipline_recovered": false,
+    "full_controller_6dof_validated": false
+  },
+  "targets": [
+    {
+      "name": "libserialport.so",
+      "sha256": "cdedc3c7e18819c53fd70d841a2e9705271c996b4b15f851aa52fe88efbff4ae"
+    },
+    {
+      "name": "libQiyiControllerWrapperJNI.so",
+      "sha256": "3b05f44cbdf84415fa303472d29e0bf433fd8e83372823276ee8447420302461"
+    },
+    {
+      "name": "libControllerSDK_EXPORT.so",
+      "sha256": "7008b975aa23b92a2cc9a43278b626d44512fbce597e92858e18f13b4609fe6a",
+      "build_id": "761b70cc35dc428f8c8e01710bb0198b156ec66c"
+    }
+  ],
+  "addresses": "All addresses here are ELF virtual addresses with Thumb bit cleared. Add 0x10000 for the saved REA observed addresses; retain Thumb bit in actual function pointers.",
+  "conclusions": [
+    {
+      "id": "direct_scaled_type7_time",
+      "status": "confirmed",
+      "statement": "The current type-7 parser passes wire_time48 multiplied by 1000 or 30500 directly to the registered tracking callback. It does not call LR::Inference, ConvertIMUToSys or another host time transformation in that path."
+    },
+    {
+      "id": "available_is_constant",
+      "status": "confirmed",
+      "statement": "TimeCalibrator::Avaliable() delegates to LR::Available(), whose entire body is movs r0,#1; bx lr. Both REA results return 1. This build has no fitted-model-ready gate at that API.",
+      "addresses": [
+        "0x10ef4",
+        "0x13648"
+      ]
+    },
+    {
+      "id": "record_flag_is_initialized",
+      "status": "confirmed",
+      "statement": "AddHandle writes 0x0101 at map-node+0x12, setting node+0x13 (HandleState+3) to 1 during creation of each hand record. This is not a flag set by a successful radio handshake.",
+      "addresses": [
+        "0xc0a0",
+        "0xc18e",
+        "0xc192"
+      ]
+    },
+    {
+      "id": "camera_time_without_active_controller",
+      "status": "confirmed_at_host_callsite",
+      "statement": "For ctrl frame phase 0 or 1, JNI calls WriteTimeStampCmd after either submitting images or releasing them because hand state/enable is unsuitable. Therefore emitting the real camera timestamp has no active-controller condition at this callsite. Phase 2 sends none.",
+      "addresses": [
+        "0x11b20"
+      ]
+    },
+    {
+      "id": "head_camera_alone",
+      "status": "partially_answered",
+      "statement": "Headboard plus real camera frames are sufficient for reaching the host timestamp-command callsite. They are not evidence that a physical controller returns valid nonzero-quaternion type-7 samples. Firmware-side construction/disciplining of the returned 48-bit counter remains unexamined; head-only operation cannot be claimed to provide controller IMU or 6DoF."
+    },
+    {
+      "id": "numeric_gate_replaces_manual_sync_assertion",
+      "status": "recommended_from_confirmed_host_path",
+      "statement": "The external --stock-clock-synchronized assertion can be removed/replaced by per-packet measured clock-domain and numeric gates. No LR-ready flag must be fabricated or awaited. Preserve verified per-hand version, META/checksum, finite/nonzero quaternion, monotonic sample policy, measured MONOTONIC-to-BOOTTIME anchor/uncertainty, fresh real transport, and the positive <33ms sample-delay interval. Passing these permits the original IMU API experiment, not a claim of synchronization accuracy or pose validity.",
+      "derived_from_conclusions": [
+        "direct_scaled_type7_time",
+        "available_is_constant",
+        "record_flag_is_initialized"
+      ]
+    }
+  ],
+  "timestamp_formation": {
+    "packet_input": "36-byte actual SPI transfer: A5 5A followed by 34 bytes.",
+    "meta": "p is the 34-byte payload copy. key=p[1]; p[0]^=key; p[2..33]^=key; retain p[1]. Validate sum8(p[0..32])==p[33] before extracting hand/type.",
+    "hand": "decoded p[0]>>7; 0=left, 1=right",
+    "wire_time48": "LE32(p+3) | (uint64(LE16(p+29)) << 32)",
+    "version_source": "Per-hand head PatternID version is {p[24],p[23],p[22]} from a valid type-2 packet. The third element controls scaling. It is not the SDK FusionImpl selector, and must not be guessed from the other hand.",
+    "scale": [
+      {
+        "head_version_third": "<25",
+        "sample_ns": "wire_time48 * 30500"
+      },
+      {
+        "head_version_third": ">=25",
+        "sample_ns": "wire_time48 * 1000"
+      }
+    ],
+    "instruction_trace": [
+      {
+        "at": "0xf7e4",
+        "effect": "GetImuPreIntPackageInfo writes the raw 48-bit counter."
+      },
+      {
+        "at": "0xf7f8",
+        "effect": "Compare head version third byte with 24."
+      },
+      {
+        "at": "0xf802/0xf806",
+        "effect": "Legacy branch forms raw*30500 in r9/r11."
+      },
+      {
+        "at": "0xf824/0xf82e",
+        "effect": "New branch forms raw*1000 in r9/r11."
+      },
+      {
+        "at": "0xfa9c",
+        "effect": "Store r9/r11 unchanged as the 64-bit timestamp provided to the tracking callback."
+      },
+      {
+        "at": "0xfab8",
+        "effect": "Invoke registered tracking callback using values[7], sideband[3], and that timestamp."
+      },
+      {
+        "at": "JNI 0xfc92..0xfc9e",
+        "effect": "Left callback preserves the timestamp and invokes SDK single-hand slot +0x44; right callback analogously uses +0x5c. Both wrap common SDK +0x18."
+      }
+    ],
+    "important_detail": "The >=25 branch stores the raw counter in one diagnostic record field, but the callback registers contain the multiplied nanoseconds. Follow the actual callback arguments rather than inferring units from that record store.",
+    "firmware_unknown": "How the headboard/controller firmware relates its returned 48-bit value to the transmitted camera timestamp, which counter captures the physical edge, and the residual error/drift are not recovered from these host libraries."
+  },
+  "stock_software_gates": [
+    {
+      "name": "A55A header, META decode, checksum and packet classifier",
+      "kind": "real",
+      "effect": "Reject malformed wire packets."
+    },
+    {
+      "name": "TimeCalibrator::Avaliable / LR::Available",
+      "kind": "constant_true",
+      "effect": "No model-ready or handshake-completion evidence."
+    },
+    {
+      "name": "map-node+0x13 == 1",
+      "kind": "initialized_true",
+      "effect": "AddHandle sets the field to 1 before controller traffic; not evidence of an external handshake. The field name beyond its parser gate remains unconfirmed."
+    },
+    {
+      "name": "callback function objects",
+      "kind": "real_registration",
+      "effect": "JNI initialize registers the system time, per-hand power/state and tracking-data callbacks. Non-null checks protect these registrations; they do not establish radio synchronization."
+    },
+    {
+      "name": "nonzero quaternion",
+      "kind": "real",
+      "effect": "All four zero values emit power/state value7 and omit tracking-data delivery; a nonzero quaternion emits value5 before checking the latency window."
+    },
+    {
+      "name": "JNI state5 or state6",
+      "kind": "real_but_not_an_independent_clock_handshake",
+      "effect": "The power callback registered at JNI 0xfdf0/0xfdfc stores the parser state directly. The nonzero-quaternion type-7 path itself sends state5 before the IMU callback. State5 alone does not prove that the later time test passed."
+    },
+    {
+      "name": "positive time and latency window",
+      "kind": "real_numeric",
+      "predicate": "sample_ns > 0 && receive_boottime_ns > sample_ns && receive_boottime_ns - sample_ns < 33000000",
+      "instruction_range": "0xfa40..0xfa7a; compare (receive-sample-1) to 32999998",
+      "effect": "The timestamp passed after this check remains raw scaled time; no affine correction is added."
+    },
+    {
+      "name": "duplicate/backwards-time bookkeeping",
+      "kind": "real_stateful",
+      "effect": "Stock suppresses duplicate/backwards samples, including reset/counter paths. The current helper's strictly increasing per-hand policy is a conservative subset, not a complete reproduction of those resets."
+    },
+    {
+      "name": "head power enable and JNI state5 for image submission",
+      "kind": "real_visual_gate",
+      "effect": "Head power3 enables images; power4 disables images. This condition guards image submission, not the later timestamp command. The JNI IMU callback checks state5/6 without the image-enable condition."
+    },
+    {
+      "name": "SDK internal IMU acceptance",
+      "kind": "real_but_not_fully_exposed",
+      "effect": "SDK +0x18 applies its own timestamp/version/tick processing. Return0 is not a fusion-acceptance or valid-pose flag."
+    }
+  ],
+  "actual_host_sequence": [
+    "Create SerialPortIO: AddHandle(0), AddHandle(1), initialize node+0x12/+0x13 to1, choose META mode2, and open the SPI/notification transport.",
+    "JNI initialize registers CLOCK_BOOTTIME and per-hand callbacks. Its Write(0x15,time) overload is an empty return0 in this build.",
+    "Run starts SerialPortLoop -> ReceiveThread. An idle exchange sends 36 bytes of EE; queued writes replace that transfer payload.",
+    "Receive real matched tracking/ctrl camera frames with the original timestamp/layout contract. JNI pushes the HMD pose at ctrl SOF before processing the frame phase.",
+    "For ctrl_frame_id%3==0 select right; ==1 select left; ==2 release both frame groups and send no timestamp command.",
+    "For phases0/1, submit images only with hand state5 and enable!=0, otherwise release them. After either branch, encode the real ctrl SOF and call WriteTimeStampCmd for that hand.",
+    "WriteTimeStampCmd creates a 12-byte body. Impl::Write queues a fixed 36-byte copy; ReceiveThread consumes the queue on real transport notifications.",
+    "For returned valid type7, read the 48-bit counter and scale directly by the per-hand PatternID version. Emit parser state5 for nonzero quaternion, then apply actual time/callback conditions and invoke JNI.",
+    "JNI forwards the original arrays and scaled timestamp through SDK +0x44/+0x5c to common +0x18. No host LR transform is inserted."
+  ],
+  "camera_timestamp_command": {
+    "body_bytes": 12,
+    "caller_input": "Real ctrl-stream SOF in BOOTTIME nanoseconds, plus real ctrl stream frame ID.",
+    "caller_conversion": "uint64(double(ctrl_sof_ns) * 0.001)",
+    "serial_conversion": "If head_version_third<25: uint64(double(caller_microseconds)/30.5); otherwise keep caller_microseconds.",
+    "format": [
+      {
+        "offset": "0",
+        "value": "A5"
+      },
+      {
+        "offset": "1",
+        "value": "0C"
+      },
+      {
+        "offset": "2",
+        "value": "11 left / 12 right"
+      },
+      {
+        "offset": "3..10",
+        "value": "encoded timestamp, uint64 little-endian"
+      },
+      {
+        "offset": "11",
+        "value": "sum8(bytes[1..10]), excluding A5"
+      }
+    ],
+    "local_store": "WriteTimeStampCmd stores the encoded value at map-node+0x2248. This store is not an acknowledgement.",
+    "spi_transfer_bytes": 36,
+    "transport_behavior": "Impl::Write ELF0x8e70 ignores the supplied length and forces 0x24 before SpiTransfer::spiSend ELF0xd12c. The queued copy is consumed by the real receive/exchange loop.",
+    "trailing_24_bytes": "Unrecovered protocol meaning. The caller builds only12 bytes at sp+0x2c..sp+0x37, while the callee copies36 starting there. The remaining bytes are caller stack contents, not verified zero/EE padding. The pure reference intentionally emits only12 bytes.",
+    "acknowledgement": "No explicit ACK for this 12-byte command has been recovered in the active host call chain. Type2 updates versions/status/SN/radio diagnostics and is not used by this host parser to acknowledge a camera timestamp.",
+    "transmit_authorized_by_this_reference": false
+  },
+  "older_round_trip_paths": {
+    "TimeSync_META": {
+      "elf": "0xf538",
+      "behavior": "Sets HandleState+0x2049 request-pending, records system time at +0x2050, chooses100ms timer duration, then WriteSyncWithIMU.",
+      "observed_in_binary_callers": [],
+      "caveat": "REA found no incoming references/callers in this serial library; the inspected SerialPortLoop/ReceiveThread and JNI startup do not call it. Export visibility alone does not establish active use."
+    },
+    "TimeSync_QIYU3": {
+      "elf": "0xf5a8",
+      "behavior": "If its encryption flag is clear, sends command0x10 GENERATE_STATIC_SECRET_KEY; otherwise marks the pending request and sends WriteSyncWithIMU. The availability checks do not wait for a fitted model in this binary.",
+      "observed_in_binary_callers": [],
+      "caveat": "No incoming references/callers found within this serial binary. Do not introduce it into the current startup as a guessed prerequisite, and do not send the secret-key command."
+    },
+    "sync_reply_parser": {
+      "elf": "0x10254",
+      "packet_class": "Wire type5 maps to PackageType dispatcher case4 / ParseSyncWithIMUPackageImpl; it is separate from wire type7.",
+      "behavior": "Only when the request-pending byte is set, clears it, checks two returned counters, converts 32768Hz ticks with (ticks*1e9)>>15, forms midpoints and calls AddSyncPair. This may feed LR coefficients, but current type7 does not consult that transform."
+    },
+    "negative_search_boundary": "Native functions in this pinned libserialport plus the already recovered JNI initialization/start/camera callsites. Unobserved external dlsym callers and firmware internals are outside this conclusion."
+  },
+  "integration_next_steps": [
+    "Root may replace the helper's external --stock-clock-synchronized assertion with measured per-packet conditions matching the recovered direct-scaled path. Preserve clock-anchor uncertainty and conservative nonfinite/stale/backwards guards.",
+    "Collect actual type7 with per-hand known PatternID version. Report raw48, scaled_ns, real receive_BOOTTIME, delta and rejection reason; never replace sample time with receive time.",
+    "Use a sequence of real samples to assess offset/drift and motion. A single in-window sample is not a clock-accuracy or motion validation.",
+    "Keep all OpenXR position/orientation valid/tracked flags false until real optical/HMD/calibration/coordinate/lifecycle validation succeeds.",
+    "For camera timestamp TX, preserve the documented real-frame phase and conversion, but resolve/validate the 36-byte transfer suffix separately. This task emits no TX and does not claim a padded transfer is exact stock behavior.",
+    "Do not wait on a fictitious LR-ready flag, send key/pairing/DFU commands, or generate sensor timestamps to make the numeric gate pass."
+  ],
+  "source_files": {
+    "pure_reference": "xr-desktop/system/tracking/controller/a081_radio_clock_reference.h",
+    "frozen_input_helper": "xr-desktop/system/tracking/controller/controller_sdk_imu.c",
+    "frozen_wire_decoder": "xr-desktop/system/tracking/controller/a081_controller_wire.h",
+    "prior_contracts": [
+      "xr-desktop/system/tracking/controller/input-contract.md",
+      "xr-desktop/system/tracking/controller/startup-contract.md",
+      "xr-desktop/system/tracking/controller/imu-input.md"
+    ],
+    "correction": "Prior references to TimeCalibrator availability and record+0x13 as unresolved readiness conditions are superseded by the constant/initialization evidence here. Retain numeric clock checks; no software available flag proves physical synchronization."
+  },
+  "validation": {
+    "strict_ndk_c11_header_include": "passed: -std=c11 -Wall -Wextra -Werror -Wpedantic -x c -include a081_radio_clock_reference.h -fsyntax-only /dev/null",
+    "strict_ndk_cpp17_header_include": "passed: -std=c++17 -Wall -Wextra -Werror -Wpedantic -x c++ -include a081_radio_clock_reference.h -fsyntax-only /dev/null",
+    "toolchain": "/workspace/Android/Sdk/ndk/26.3.11579264/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi28-clang[++]",
+    "json_evidence_paths_and_ids": "all referenced files exist; every listed Evidence ID matches saved structuredContent",
+    "target_execution": false,
+    "device_access": false,
+    "generated_sensor_samples": false,
+    "frozen_helper_sha256": "706f0130836bf68c47e5e3fdae46233606dff0f539e74cd3c6ba54543035d7f2",
+    "rea_close_binary": "success; build/xr-tracking-r1/controller/radio-clock/close.json",
+    "http_exec_session": "57032 exited130 after Ctrl-C; its remaining REA node PID1791662 was identified by exact workspace command/port and terminated with SIGTERM; port18766 no longer listening"
+  }
+}

@@ -1,0 +1,143 @@
+{
+  "contract": "a081.controller.controls",
+  "version": 1,
+  "scope": "Real Nordic transport observations decoded to vendor controls; no OpenXR action/profile assignment, pose, radio TX, MCU or SDK call in controls-only mode.",
+  "targets": [
+    {
+      "name": "libserialport.so",
+      "sha256": "cdedc3c7e18819c53fd70d841a2e9705271c996b4b15f851aa52fe88efbff4ae"
+    },
+    {
+      "name": "libQiyiControllerWrapperJNI.so",
+      "sha256": "3b05f44cbdf84415fa303472d29e0bf433fd8e83372823276ee8447420302461"
+    }
+  ],
+  "wire_boundary": {
+    "transport": "Existing nordic-stream JSONL rx field,36 actual bytes; ignore all producer-derived fields and decode rx again.",
+    "validation": "Strict A55A, META key=p[1] XOR p[0],p[2..33],retain p[1],sum8 inclusive of p[1].",
+    "hand": "decoded p[0]>>7,0=left,1=right",
+    "payload_offsets": "Offsets below refer to the decoded34-byte payload."
+  },
+  "corrected_prior_interpretation": {
+    "removed": "buttons_nibble = p[1]&15",
+    "replacement": "payload1_low_nibble = p[1]&15, neutral observation; not a button field",
+    "actual_button_source": "mode1 p[27]&0xf0 (unshifted)",
+    "compatibility": "Incorrect alias removed from reference structure and nordic-stream JSON. No false-compatible alias retained. Existing helper parses raw rx, so its input prefix remains unchanged."
+  },
+  "fields": [
+    {
+      "name": "stock_buttons_raw",
+      "mask": 1,
+      "mode": 1,
+      "formula": "p[27]&0xf0",
+      "range": [
+        0,
+        240
+      ],
+      "setter_elf": "0xbb54",
+      "callback_pointer_node_offset": "0x2230",
+      "parsed_value_node_offset": "0x2345"
+    },
+    {
+      "name": "stock_touch_raw",
+      "mask": 2,
+      "mode": 1,
+      "formula": "p[27]&15",
+      "range": [
+        0,
+        15
+      ],
+      "setter_elf": "0xb9cc",
+      "callback_pointer_node_offset": "0x2218",
+      "parsed_value_node_offset": "0x2344"
+    },
+    {
+      "name": "stock_index_finger_raw",
+      "mask": 4,
+      "mode": 1,
+      "formula": "p[28]&15",
+      "range": [
+        0,
+        15
+      ],
+      "setter_elf": "0xb6bc",
+      "callback_pointer_node_offset": "0x21e8",
+      "parsed_value_node_offset": "0x2342"
+    },
+    {
+      "name": "stock_middle_finger_raw",
+      "mask": 8,
+      "mode": 1,
+      "formula": "p[28]>>4",
+      "range": [
+        0,
+        15
+      ],
+      "setter_elf": "0xb844",
+      "callback_pointer_node_offset": "0x2200",
+      "parsed_value_node_offset": "0x2343"
+    },
+    {
+      "name": "stock_joystick_raw",
+      "mask": 16,
+      "mode": 2,
+      "formula": "[signed8(p[28]),signed8(p[27])]",
+      "range_each": [
+        -128,
+        127
+      ],
+      "setter_elf": "0xb538",
+      "callback_pointer_node_offset": "0x21d0",
+      "parsed_value_node_offset": "0x2340..0x2341"
+    }
+  ],
+  "state_and_time": {
+    "source": "CLOCK_MONOTONIC transport completion timestamp, not wireless sample time or XrTime.",
+    "known_fields": "seen_mask only after actual corresponding mode; updated_mask covers current packet only.",
+    "separate_receipts": "mode1_receipt_monotonic_ns and joystick_receipt_monotonic_ns, each with its own source sequence. Mode2 cannot refresh button/touch/finger state and mode1 cannot refresh joystick.",
+    "pattern_gate": "Per-hand real type2 head_version={p24,p23,p22}. For version third>=25,power=p25&15,gzll=p25>>4; otherwise power=p25 and GZLL unknown. Original head_pwr callback sets enable only for power3. GZLL state3 is not asserted paired.",
+    "clear_on_state": "Initial/changed head version or enable transition clears all old control values. Any non-enabled pattern clears them; reenabling does not resurrect old values.",
+    "freshness_limit_ns": 100000000,
+    "freshness_policy": "Local consumer policy; not recovered vendor disconnect timeout. now>=receipt and now-receipt<limit, Pattern known,stock_enable required for each valid mask bit. No dependence on pose confidence or IMU quaternion.",
+    "replay": "valid_mask=0/input_active=false always; historical records never active inputs.",
+    "release": "Consumers MUST recompute freshness per field on each use, release absent/expired bits, and release all controls on EOF/error/source restart. Helper emits expired changes while transport lines continue and explicit both-hand zero masks/values on normal EOF. A killed/stalled producer cannot be relied on to emit a final line.",
+    "wire_clock": "Original IMU BOOTTIME scale/33ms gates remain unchanged; controls do not claim or manufacture wireless synchronization."
+  },
+  "jsonl": {
+    "kind": "controller_controls",
+    "version": 1,
+    "reasons": [
+      "pattern",
+      "type7",
+      "expired",
+      "eof"
+    ],
+    "field_validity": "valid_mask is at emission time only; consumers recompute against receipt/max_age at consumption. Raw stale values are diagnostic, never active actions.",
+    "always_false": [
+      "openxr_actions_mapped",
+      "position_tracking"
+    ],
+    "raw_not_jni": "The fields intentionally precede JNI per-hand transforms and button policy. No A/B/menu names or normalized OpenXR axes/trigger are assigned."
+  },
+  "jni_boundary": {
+    "joystick_left_elf": "0x10258",
+    "joystick_right_elf": "0x10270",
+    "observed": "Left callback swaps and negates bytes; right swaps. Getter clamps to [-80,80]. Raw serial axes therefore are not claimed as OpenXR coordinates.",
+    "button_callbacks": [
+      "0x10318",
+      "0x10350"
+    ],
+    "touch_callbacks": [
+      "0x102c8",
+      "0x102f0"
+    ],
+    "limitation": "JNI also remaps touch/button bits and uses a left-side configuration gate. Physical control labels and configuration semantics remain unverified; not reproduced by this raw adapter."
+  },
+  "entrypoints": {
+    "arm64": "a081-controller-controls [--controls-only] [--seconds1..120], built with A081_CONTROLLER_CONTROLS_ONLY; --sdk rejected, no loader/SDK code present.",
+    "arm32": "controller-sdk-imu --controls-only or existing --sdk path.",
+    "historical_replay": "--replay; no SDK calls, all validity inactive.",
+    "input": "Exact existing nordic-stream raw JSONL on stdin. The helper itself opens no Nordic device."
+  },
+  "address_convention": "Listed addresses are ELF VA with Thumb bit cleared; REA/Ghidra observed addresses add0x10000."
+}
